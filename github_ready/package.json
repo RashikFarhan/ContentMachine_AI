@@ -1,0 +1,10 @@
+{
+  "name": "yt-2.0-root",
+  "version": "1.0.0",
+  "description": "Root package for setting up workspaces if needed.",
+  "scripts": {
+    "install-all": "npm run install-server && npm run install-client",
+    "install-server": "cd server && npm install",
+    "install-client": "cd client && npm install"
+  }
+}

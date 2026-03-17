@@ -1,0 +1,190 @@
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
+require('dotenv').config();
+
+const TEMP_DIR = path.join(__dirname, '../temp');
+const OUTPUT_DIR = path.join(__dirname, '../public/videos');
+
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+class VideoService {
+
+    async downloadMedia(url, outputPath) {
+        if (!url) return null;
+        try {
+            const response = await axios({
+                url,
+                method: 'GET',
+                responseType: 'stream'
+            });
+
+            const writer = fs.createWriteStream(outputPath);
+            response.data.pipe(writer);
+
+            return new Promise((resolve, reject) => {
+                writer.on('finish', () => {
+                    // Check if file is empty
+                    const stats = fs.statSync(outputPath);
+                    if (stats.size === 0) {
+                        fs.unlinkSync(outputPath); // Remove empty file
+                        console.warn(`Downloaded empty file: ${url}`);
+                        resolve(null);
+                    } else {
+                        resolve(outputPath);
+                    }
+                });
+                writer.on('error', (err) => {
+                    fs.unlinkSync(outputPath); // Clean up on error
+                    reject(err);
+                });
+            });
+        } catch (e) {
+            console.error(`Failed to download ${url}:`, e.message);
+            return null;
+        }
+    }
+
+    async buildVideo(data) {
+        // data = { script, audioUrl (relative), keywords, mediaResults (array of Pexels objects), settings, title, description }
+
+        const jobId = uuidv4();
+        console.log(`Starting video build job ${jobId}...`);
+
+        const jobDir = path.join(TEMP_DIR, jobId);
+        if (!fs.existsSync(jobDir)) fs.mkdirSync(jobDir, { recursive: true });
+
+        const mediaBaseDir = path.join(jobDir, 'media');
+        if (!fs.existsSync(mediaBaseDir)) fs.mkdirSync(mediaBaseDir, { recursive: true });
+
+        // 1. Prepare Paths
+        // Audio path is relative from public, need absolute
+        const audioPath_abs = path.join(__dirname, '../public', data.audioUrl.replace('/audio/', 'audio/'));
+
+        // 2. Download Media
+        const mediaStructure = {}; // keyword -> [absolute_paths]
+
+        // Ensure data.mediaResults is valid
+        if (data.mediaResults && Array.isArray(data.mediaResults)) {
+            for (const group of data.mediaResults) {
+                const keyword = group.keyword;
+                if (!keyword || !group.results) continue;
+
+                // Sanitize keyword for folder name
+                const safeKeyword = keyword.replace(/[^a-zA-Z0-9]/g, '_');
+                const keywordDir = path.join(mediaBaseDir, safeKeyword);
+                if (!fs.existsSync(keywordDir)) fs.mkdirSync(keywordDir, { recursive: true });
+
+                const validPaths = [];
+                // Download ALL results provided (or a generous limit if too many)
+                // We'll take up to 15 to ensure variety but avoid infinite downloads
+                const items = group.results.slice(0, 15);
+
+                for (const item of items) {
+                    if (!item.url) continue;
+
+                    const ext = item.type === 'video' ? '.mp4' : '.jpg';
+                    const filename = `${item.id}${ext}`;
+                    const destPath = path.join(keywordDir, filename);
+
+                    // Skip if already exists (unlikely with new jobId, but good practice)
+                    if (fs.existsSync(destPath)) {
+                        validPaths.push(destPath);
+                        continue;
+                    }
+
+                    const localPath = await this.downloadMedia(item.url, destPath);
+                    if (localPath) {
+                        validPaths.push(localPath);
+                    }
+                }
+
+                if (validPaths.length > 0) {
+                    mediaStructure[keyword] = validPaths;
+                }
+            }
+        }
+
+        // 3. Create Job Config
+        const outputFilename = `video_${jobId}.mp4`;
+        const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+        const jobConfig = {
+            job_id: jobId,
+            script: data.script,
+            audio_path: audioPath_abs,
+            output_file: outputPath,
+            keywords: data.keywords,
+            media_map: mediaStructure, // keyword -> [paths]
+            assembly_api_key: process.env.ASSEMBLYAI_API_KEY,
+            job_dir: jobDir, // Pass job directory for temp files e.g. resized images
+            settings: data.settings || { aspect_ratio: '9:16', max_duration: 60 }
+        };
+
+        const jobPath = path.join(jobDir, 'job.json');
+        fs.writeFileSync(jobPath, JSON.stringify(jobConfig, null, 2));
+
+        // 4. Spawn Python
+        return new Promise((resolve, reject) => {
+            const pythonProcess = spawn('python', ['video_builder/build_video.py', jobPath], {
+                cwd: path.join(__dirname, '../') // Run from server root (server/)
+            });
+
+            pythonProcess.stdout.on('data', (data) => console.log(`[Python]: ${data}`));
+            pythonProcess.stderr.on('data', (data) => console.error(`[Python Error]: ${data}`));
+
+            pythonProcess.on('close', (code) => {
+                if (code === 0) {
+                    // Save metadata for YouTube Upload
+                    // We assume data.title and data.description are passed in
+                    const latestVideoData = {
+                        video_path: outputPath,
+                        title: data.title || "My AI Video",
+                        description: data.description || "Generated Video"
+                    };
+                    const latestPath = path.join(__dirname, '../data/latest_video.json');
+                    fs.writeFileSync(latestPath, JSON.stringify(latestVideoData, null, 2));
+                    console.log('Saved latest video metadata to:', latestPath);
+
+                    // --- SAVE TO HISTORY HERE ONLY ON SUCCESSFUL VIDEO GEN ---
+                    if (data.workspaceId) {
+                        const historyFile = path.join(__dirname, `../data/history_${data.workspaceId}.json`);
+                        const generatedDataForHistory = {
+                            title: data.title || "My AI Video",
+                            keywords: data.keywords || [],
+                            timestamp: new Date().toISOString()
+                        };
+
+                        let updatedHistory = [];
+                        if (fs.existsSync(historyFile)) {
+                            try {
+                                updatedHistory = JSON.parse(fs.readFileSync(historyFile, 'utf8'));
+                            } catch (e) {
+                                console.error("Error reading history file for append:", e);
+                            }
+                        }
+                        updatedHistory.push(generatedDataForHistory);
+                        fs.writeFileSync(historyFile, JSON.stringify(updatedHistory, null, 2), 'utf8');
+                        console.log(`Saved history to ${historyFile}`);
+                    }
+
+                    resolve({
+                        success: true,
+                        videoUrl: `/videos/${outputFilename}`,
+                        jobId
+                    });
+                } else {
+                    reject(new Error(`Video build failed with code ${code}`));
+                }
+
+                // Cleanup (Optional - kept for debugging now)
+                // fs.rmSync(jobDir, { recursive: true, force: true });
+            });
+        });
+    }
+}
+
+module.exports = new VideoService();

@@ -1,0 +1,28 @@
+# Node
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+
+# Generated Media and Temps
+temp/
+server/temp/
+*.mp4
+*.wav
+*.mp3
+
+# Server Data and Workspaces
+server/data/workspaces.json
+server/data/history_*.json
+server/data/latest_video.json
+server/data/meta_config.json
+
+# Credentials
+credentials/*.json
+!credentials/client_secret*.json

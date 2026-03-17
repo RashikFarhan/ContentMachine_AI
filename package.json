@@ -1,0 +1,62 @@
+{
+  "name": "yt2.0",
+  "version": "1.0.0",
+  "description": "YT 2.0 — AI Content Factory",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "electron-dev": "electron .",
+    "build-client": "cd client && npm run build",
+    "dist": "npm run build-client && electron-builder",
+    "postinstall": "cd server && npm install && cd ../client && npm install"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@ngrok/ngrok": "^1.7.0",
+    "axios": "^1.13.5",
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "form-data": "^4.0.5",
+    "googleapis": "^171.4.0",
+    "msedge-tts": "^2.0.4",
+    "multer": "^2.0.2",
+    "pexels": "^1.4.0",
+    "uuid": "^13.0.0"
+  },
+  "build": {
+    "appId": "com.yt2.contentfactory",
+    "productName": "YT 2.0",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "paths.js",
+      "server/**/*",
+      "!server/node_modules",
+      "!server/temp/**",
+      "!server/.env",
+      "client/dist/**",
+      "python-dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "python-dist/",
+        "to": "python-dist/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
